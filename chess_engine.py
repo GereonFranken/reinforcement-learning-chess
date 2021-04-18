@@ -2,6 +2,8 @@ import chess.svg
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Conv2D, MaxPool2D, Dense, Flatten, Activation, Dropout, BatchNormalization
+
+from MCTS_Helper import MCTSHelper as Helper
 from Modified_Tensorboard import ModifiedTensorBoard
 from collections import deque
 import time
@@ -14,7 +16,7 @@ MODEL_NAME = "Chess_Engine"
 DISCOUNT = 0.99
 REPLAY_MEMORY_SIZE = 50_000  # How many last steps to keep for model training
 MIN_REPLAY_MEMORY_SIZE = 1_000  # Minimum number of steps in a memory to start training
-MINI_BATCH_SIZE = 64  # How many steps (samples) to use for training
+MINI_BATCH_SIZE = 8  # How many steps (samples) to use for training
 UPDATE_TARGET_EVERY = 5  # Terminal states (end of episodes)
 MIN_REWARD = -20  # For model save
 MEMORY_FRACTION = 0.20
@@ -46,7 +48,7 @@ class DQNAgent:
         self.value_head = []  # expected reward for the best move
 
         # Target model => used to predict every step
-        self.target_model = tf.keras.Sequential()
+        self.target_model = self.create_model()
         # self.target_model.set_weights(self.model.get_weights())
 
         self.replay_memory = deque(maxlen=REPLAY_MEMORY_SIZE)
@@ -56,6 +58,7 @@ class DQNAgent:
 
     def create_model(self):
         input_layer = tf.keras.layers.Input(shape=env.BOARD_REPRESENTATION_SHAPE)
+        # input_layer = tf.keras.layers.InputLayer(input_shape=env.BOARD_REPRESENTATION_SHAPE)
         layers = Conv2D(256, (3, 3), padding="same")(input_layer)
         layers = BatchNormalization()(layers)
         layers = Activation(tf.keras.activations.relu)(layers)
@@ -63,7 +66,7 @@ class DQNAgent:
             layers = self.add_residual_layer(layers)
         self.policy_head = self.set_policy_head(layers)
         self.value_head = self.set_value_head(layers)
-        model = tf.keras.Model(inputs=[input_layer], outputs=[self.policy_head, self.value_head], name="Main NN")
+        model = tf.keras.Model(inputs=[input_layer], outputs=[self.policy_head, self.value_head], name="Main_NN")
         model.compile(loss=tf.keras.losses.categorical_crossentropy,
                       optimizer=tf.keras.optimizers.Adam(lr=0.001),
                       metrics=['accuracy'])
@@ -95,11 +98,11 @@ class DQNAgent:
 
     def set_policy_head(self, input_block):
         x = Flatten()(input_block)
-        x = Dense(4_672, activation=tf.keras.activations.softmax, name="policy_head")(x)
+        x = Dense(1968, activation=tf.keras.activations.softmax, name="policy_head")(x)
         return x
 
-    def get_qs(self, state):
-        return self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0]
+    def get_qs(self, represented_board: np.ndarray):
+        return self.model.predict(np.expand_dims(represented_board, axis=0))
 
     def update_replay_memory(self, transition):
         self.replay_memory.append(transition)
@@ -109,15 +112,17 @@ class DQNAgent:
             return
 
         mini_batch = random.sample(self.replay_memory, MINI_BATCH_SIZE)
-        current_states = np.array([transition[0] for transition in mini_batch]) / 255
-        current_qs_list = self.model.predict(current_states)
+        current_boards = np.array([transition[0] for transition in mini_batch])
+        current_qs_list = [self.model.predict(env.get_board_representation(current_board, current_board.turn))
+                           for current_board in current_boards]
 
-        new_current_states = np.array([transition[3] for transition in mini_batch]) / 255
-        future_qs_list = self.target_model.predict(new_current_states)
+        new_boards = np.array([transition[3] for transition in mini_batch])
+        future_qs_list = [self.target_model.predict(env.get_board_representation(new_board, new_board.turn))
+                          for new_board in new_boards]
         X = []
         y = []
 
-        for index, (current_state, action, reward, new_current_state, done) in enumerate(mini_batch):
+        for index, (current_board, move, reward, new_board, done) in enumerate(mini_batch):
             if not done:
                 max_future_q = np.max(future_qs_list[index])
                 new_q = reward + DISCOUNT * max_future_q
@@ -125,12 +130,12 @@ class DQNAgent:
                 new_q = reward
 
             current_qs = current_qs_list[index]
-            current_qs[action] = new_q
+            current_qs[move] = new_q
 
-            X.append(current_state)
+            X.append(current_board)
             y.append(current_qs)
 
-        self.model.fit(np.array(X) / 255, np.array(y), batch_size=MINI_BATCH_SIZE,
+        self.model.fit(np.array(X), np.array(y), batch_size=MINI_BATCH_SIZE,
                        verbose=0, shuffle=False, callbacks=[self.tensorboard] if terminal_state else None)
 
         # updating to determine if we wanna update target model
@@ -170,20 +175,21 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
     step = 1
 
     # Reset environment and get initial state
-    current_state = env.reset()
+    env.reset()
 
     # Reset flag and start iterating until episode ends
     done = False
     while not done:
 
-        # env.update_action_space()
         # This part stays mostly the same, the change is to query a model for Q values
         if np.random.random() > epsilon:
             # Get action from Q table
-            action = np.argmax(agents[str(env.board.turn)].get_qs(current_state))
+            priors, _ = agents[str(env.board.turn)].get_qs(env.get_board_representation(env.board, env.board.turn))
+            priors = Helper().transform_priors(env.board, priors)
+            action = np.argmax([prior for _, prior in priors])
         else:
             # Get random action
-            action = np.random.randint(0, env.action_space_size)
+            action = np.random.randint(0, len(list(env.board.legal_moves)))
 
         new_state, reward, done = env.step(action, agents[str(env.board.turn)].color)
 
@@ -191,9 +197,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
         episode_reward += reward
 
         # Every step we update replay memory and train main network
-        agents[str(env.board.turn)].update_replay_memory((current_state, action, reward, new_state, done))
+        agents[str(env.board.turn)].update_replay_memory((env.board, action, reward, new_state, done))
         agents[str(env.board.turn)].train(done)
-        current_state = new_state
         step += 1
 
         # Append episode reward to a list and log stats (every given number of episodes)
@@ -202,8 +207,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
             average_reward = sum(ep_rewards[-AGGREGATE_STATS_EVERY:]) / len(ep_rewards[-AGGREGATE_STATS_EVERY:])
             min_reward = min(ep_rewards[-AGGREGATE_STATS_EVERY:])
             max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
-            agents[str(env.board.turn)].tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward, reward_max=max_reward,
-                                           epsilon=epsilon)
+            agents[str(env.board.turn)].tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward,
+                                                                 reward_max=max_reward, epsilon=epsilon)
 
             # Save model, but only when min reward is greater or equal a set value
             if average_reward >= MIN_REWARD:

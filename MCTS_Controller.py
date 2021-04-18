@@ -1,110 +1,59 @@
 import numpy as np
 import chess
-from numpy.random import sample
-from multiprocessing.dummy import Pool, Manager
-from copy import deepcopy
-import random
-
-from tensorflow.python.autograph.operators import int_
-
-from Board_Evaluation import evaluate_position
-
-
-class MCTSController(object):
-
-    def __init__(self, manager, c=1.5):
-        super().__init__()
-
-        self.visits = manager.dict()
-        self.differential = manager.dict()
-        self.C = c
-
-    def record(self, board: chess.Board, score):
-        self.visits["total"] = self.visits.get("total", 1) + 1
-        self.visits[hash(board.fen())] = self.visits.get(hash(board.fen()), 0) + 1
-        self.differential[hash(board.fen())] = self.differential.get(hash(board.fen()), 0) + score
-
-    r"""
-    Runs a single, random heuristic guided playout starting from a given state. This updates the 'visits' and 'differential'
-    counts for that state, as well as likely updating many children states.
-    """
-
-    def playout(self, board: chess.Board, expand=10):
-
-        if expand == 0 or board.is_game_over():
-            score = evaluate_position(board)
-            self.record(board, score)
-            # print ('X' if board.turn==1 else 'O', score)
-            return score
-
-        action_mapping = {}
-
-        for move in list(board.legal_moves):
-            board.push(move)
-            action_mapping[move] = self.heuristic_value(board)
-            board.pop()
-
-        chosen_action = max(action_mapping, key=action_mapping.get) # replace with priors from NN
-        board.push(chosen_action)
-        score = -self.playout(board, expand=expand - 1)  # play branch
-        board.pop()
-        self.record(board, score)
-        return score
-
-    r"""
-    Evaluates the "value" of a state as a bandit problem, using the value + exploration heuristic.
-    """
-
-    def heuristic_value(self, board: chess.Board):
-        simulated_game_states = self.visits.get("total", 1)
-        number_move_played_in_simulation = self.visits.get(hash(board.fen()), 1e-9)
-        heuristic_score = self.differential.get(hash(board.fen()), 0) * 1.0 / number_move_played_in_simulation
-        return heuristic_score + self.C * (np.log(simulated_game_states) / number_move_played_in_simulation)
-
-    r"""
-    Evaluates the "value" of a state by randomly playing out boards starting from that state and noting the win/loss ratio.
-    """
-
-    def value(self, board: chess.Board, playouts=10, steps=5):
-
-        # play random playouts starting from that board value
-        with Pool() as p:
-            scores = p.map(self.playout, [deepcopy(board) for i in range(0, playouts)])
-
-        return self.differential[hash(board.fen())] * 1.0 / self.visits[hash(board.fen())]
-
-    r"""
-    Chooses the move that results in the highest value state.
-    """
-
-    def best_move(self, board: chess.Board, playouts=20):
-
-        action_mapping = {}
-
-        for action in list(board.legal_moves):
-            board.push(action)
-            action_mapping[action] = self.value(board, playouts=playouts)
-            board.pop()
-
-        print({a: "{0:.2f}".format(action_mapping[a]) for a in action_mapping})
-        return max(action_mapping, key=action_mapping.get)
-
-# board = chess.Board()
-# for i in range(20):
-#     board.push(random.choice(list(board.legal_moves)))
-# tree = MCTSController(Manager())
-# print(board)
-# from BlobEnv import BlobEnv
-# blob = BlobEnv()
-# blob.get_png_board(board)
-# best_move = tree.best_move(board)
-# print(best_move)
-
 from BlobEnv import BlobEnv
-env = BlobEnv()
-# for i in range(20):
-#     env.board.push(random.choice(list(env.board.legal_moves)))
-env.get_board_representation(chess.WHITE)
+from tensorflow.keras import Model
+from MCTS_Node import MCTSNode
+from MCTS_Helper import MCTSHelper
+from copy import deepcopy
+from typing import List
 
 
+class MCTSController:
 
+    def __init__(self, board: chess.Board = None, model: Model = None):
+        self.root = MCTSNode(board, None, None)
+        self.current_node: MCTSNode = self.root # current node that is looked at. Is root node at the beginning
+        self.helper = MCTSHelper()
+        self.env = BlobEnv()
+        self.model = model
+        self.c = 1.5  # exploration param
+        self.t = 0.5  # how greedily should an action be chosen according to the visit count
+
+    def selection(self, node_children: List[MCTSNode]):
+        # add Dirichlet noise to priors
+        noises = np.random.dirichlet(np.full((len(node_children)), 0.3))  # 0.3 as Dirichlet alpha
+        for i, child in enumerate(node_children):
+            child.p += noises[i]
+        total_visits = np.sum(list(map(lambda child: child.n, node_children)))
+        move_scores = [child.q + self.c * child.p * (np.sqrt(total_visits) / (1 + child.n))
+                       for child in node_children]
+        return node_children[np.argmax(move_scores)]
+
+    def expand(self, node: MCTSNode):
+        board_representation = self.env.get_board_representation(node.board)
+        priors, value = self.model.predict(board_representation)
+        priors: List[(str, float)] = self.helper.transform_priors(node.board, priors)
+        for move, prior in priors:
+            new_board = deepcopy(node.board).push(move)
+            node.children.append(MCTSNode(new_board, prior, node))
+        self.backpropagation(node, value, node.board.turn)
+
+    def backpropagation(self, node: MCTSNode, value, leaf_turn: chess.WHITE or chess.BLACK):
+        if node.parent is not None:
+            node.w = node.w - value if node.board.turn != leaf_turn else node.w + value
+            node.update_counts()
+            self.backpropagation(node.parent, value, leaf_turn)
+
+    def choose_best_action(self):
+        # choose best child according to visit count
+        total_visits = np.sum(list(map(lambda child: child.n, self.root.children)))
+        return self.root.children[np.argmax([(child.n ** (1 / self.t)) / (total_visits ** (1 / self.t))
+                                             for child in self.root.children])]
+
+    def find_best_move(self):
+        for _ in range(100):
+            self.expand(self.current_node)
+            self.current_node = self.root
+            while len(self.current_node.children):
+                self.current_node = self.selection(self.current_node.children)
+        return self.choose_best_action()

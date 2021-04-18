@@ -30,8 +30,6 @@ class BlobEnv:
             self.episode_step += 1
             self.action(action)
 
-            new_observation = self.get_png_board(self.board)
-
             if self.board.is_checkmate():
                 img = Image.open(os.getcwd() + '\\board.png')
                 img.save(f"checkmate{self.episode_step}.png", "PNG")
@@ -50,7 +48,7 @@ class BlobEnv:
                     reward == self.WIN_REWARD / 4 or self.episode_step >= 120:
                 done = True
 
-            return new_observation, reward, done
+            return self.board, reward, done
 
     def get_png_board(self, board):
         svg_name = 'board.svg'
@@ -69,20 +67,21 @@ class BlobEnv:
     def update_action_space(self):
         self.action_space_size = self.board.legal_moves.count()
 
-    def get_board_representation(self, agent_color):
+    def get_board_representation(self, board: chess.Board, agent_color) -> np.ndarray((8, 8, 102)):
         """
-        get board representation to be fitting to the res net. Inspired but not fully like the alphazero architecture.
+        Get board representation to be fitting to the res net. Inspired but not fully like the alphazero architecture.
         The board gets transformed into binary planes for the most part. Every piece of both players gets located and a
         plane is formed. This happens for the last 8 half-moves. If the move stack is empty, planes full of zeros get
         added. Additionally there are 6 constant valued planes for the color to move, the total move count and the
         castling rights of both players to both sides.
+        :param board: current board that the board representation is needed for
         :param agent_color: current player to move. Either chess.WHITE or chess.BLACK
         :return: board representation in shape (8, 8, 102). Consists of 102 planes of the 8*8 board.
             102 = (6 pieces for white + 6 pieces for black) * 8 + 6
         """
         pieces_to_represent = [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING]
         board_representation = np.empty((8, 8, 0))
-        current_board = deepcopy(self.board)
+        current_board = deepcopy(board)
         move_ctr = self.board.halfmove_clock + 1
         for i in range(8):
             for color in [chess.WHITE, chess.BLACK]:
