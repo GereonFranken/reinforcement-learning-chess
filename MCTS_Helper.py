@@ -15,6 +15,11 @@ class MCTSHelper:
         self.main_diag = []
         self.second_diag = []
 
+    def __new__(cls):  # make class singleton
+        if not hasattr(cls, 'instance'):
+            cls.instance = super(MCTSHelper, cls).__new__(cls)
+        return cls.instance
+
     def _get_uci_mapping(self):
         """
         :return: A list of all possible moves on a chessboard in uci format. List length = 1968.
@@ -109,3 +114,6 @@ class MCTSHelper:
             legal_priors.append(np.array(priors).reshape(1968)[i])
         legal_priors = [prior / np.sum(np.array(legal_priors)) for prior in legal_priors]  # normalize
         return np.array([(legal_moves[j], legal_priors[j]) for j in range(len(legal_priors))])
+
+    def find_index_of_move(self, move: str) -> int:
+        return np.argwhere((self.uci_labels == move).all(-1))

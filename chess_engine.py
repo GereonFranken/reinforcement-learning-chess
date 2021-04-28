@@ -1,16 +1,15 @@
 import chess.svg
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, MaxPool2D, Dense, Flatten, Activation, Dropout, BatchNormalization
-
-from MCTS_Helper import MCTSHelper as Helper
-from Modified_Tensorboard import ModifiedTensorBoard
-from collections import deque
 import time
 import random
 import os
-from BlobEnv import BlobEnv
 from tqdm import tqdm
+
+import MCTS_Node
+from BlobEnv import BlobEnv
+from MCTS_Controller import MCTSController as MCTS
+from Chess_Model import ChessModel
 
 MODEL_NAME = "Chess_Engine"
 DISCOUNT = 0.99
@@ -24,133 +23,27 @@ MEMORY_FRACTION = 0.20
 # Environment settings
 EPISODES = 50
 
-# Exploration settings
-epsilon = 1  # not a constant, going to be decayed
-EPSILON_DECAY = 0.99975
-MIN_EPSILON = 0.001
-
 #  Stats settings
 AGGREGATE_STATS_EVERY = 50  # episodes
 SHOW_PREVIEW = False
 
+env = BlobEnv()
 
-class DQNAgent:
+
+class ChessAgent:
 
     def __init__(self, color):
-        """
-       Anfangs gibt es sehr viel zufälliges Aussuchen von Aktionen und updated von Gewichten.
-       Um keinem zufälligen Lernen zum Opfer zu fallen, wird erst nach einem bestimmten Durchlauf das target model mit
-       dem richtigen model überschrieben
-       """
-        # Main model => gets trained every step
-        self.model = self.create_model()
-        self.policy_head = []  # probability distribution over all moves
-        self.value_head = []  # expected reward for the best move
-
-        # Target model => used to predict every step
-        self.target_model = self.create_model()
-        # self.target_model.set_weights(self.model.get_weights())
-
-        self.replay_memory = deque(maxlen=REPLAY_MEMORY_SIZE)
-        self.tensorboard = ModifiedTensorBoard(log_dir=f"logs/{MODEL_NAME}.{int(time.time())}")
-        self.target_update_counter = 0
+        self.model_controller = ChessModel()
         self.color = color  # determine for which color to play
 
-    def create_model(self):
-        input_layer = tf.keras.layers.Input(shape=env.BOARD_REPRESENTATION_SHAPE)
-        # input_layer = tf.keras.layers.InputLayer(input_shape=env.BOARD_REPRESENTATION_SHAPE)
-        layers = Conv2D(256, (3, 3), padding="same")(input_layer)
-        layers = BatchNormalization()(layers)
-        layers = Activation(tf.keras.activations.relu)(layers)
-        for _ in range(3):
-            layers = self.add_residual_layer(layers)
-        self.policy_head = self.set_policy_head(layers)
-        self.value_head = self.set_value_head(layers)
-        model = tf.keras.Model(inputs=[input_layer], outputs=[self.policy_head, self.value_head], name="Main_NN")
-        model.compile(loss=tf.keras.losses.categorical_crossentropy,
-                      optimizer=tf.keras.optimizers.Adam(lr=0.001),
-                      metrics=['accuracy'])
-        return model
-
-    def add_conv_layer(self, x):
-        x = Conv2D(256, (3, 3), padding="same")(x)
-        x = BatchNormalization()(x)
-        x = Activation(tf.keras.activations.relu)(x)
-        return x
-
-    def add_residual_layer(self, input_block):
-        new_res_block = self.add_conv_layer(input_block)
-        new_res_block = Conv2D(256, (3, 3), padding="same")(new_res_block)
-        new_res_block = BatchNormalization()(new_res_block)
-        new_res_block = tf.keras.layers.add([input_block, new_res_block])
-        new_res_block = Activation(tf.keras.activations.relu)(new_res_block)
-        return new_res_block
-
-    def set_value_head(self, input_block):
-        x = Conv2D(256, (1, 1))(input_block)
-        x = BatchNormalization(axis=3)(x)
-        x = Activation(tf.keras.activations.relu)(x)
-        x = Flatten()(x)
-        x = Dense(60, activation=tf.keras.activations.relu)(x)
-        x = tf.keras.layers.LeakyReLU()(x)
-        x = Dense(1, activation=tf.keras.activations.tanh, name="value_head")(x)
-        return x
-
-    def set_policy_head(self, input_block):
-        x = Flatten()(input_block)
-        x = Dense(1968, activation=tf.keras.activations.softmax, name="policy_head")(x)
-        return x
-
-    def get_qs(self, represented_board: np.ndarray):
-        return self.model.predict(np.expand_dims(represented_board, axis=0))
-
-    def update_replay_memory(self, transition):
-        self.replay_memory.append(transition)
-
-    def train(self, terminal_state):
-        if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:
-            return
-
-        mini_batch = random.sample(self.replay_memory, MINI_BATCH_SIZE)
-        current_boards = np.array([transition[0] for transition in mini_batch])
-        current_qs_list = [self.model.predict(env.get_board_representation(current_board, current_board.turn))
-                           for current_board in current_boards]
-
-        new_boards = np.array([transition[3] for transition in mini_batch])
-        future_qs_list = [self.target_model.predict(env.get_board_representation(new_board, new_board.turn))
-                          for new_board in new_boards]
-        X = []
-        y = []
-
-        for index, (current_board, move, reward, new_board, done) in enumerate(mini_batch):
-            if not done:
-                max_future_q = np.max(future_qs_list[index])
-                new_q = reward + DISCOUNT * max_future_q
-            else:
-                new_q = reward
-
-            current_qs = current_qs_list[index]
-            current_qs[move] = new_q
-
-            X.append(current_board)
-            y.append(current_qs)
-
-        self.model.fit(np.array(X), np.array(y), batch_size=MINI_BATCH_SIZE,
-                       verbose=0, shuffle=False, callbacks=[self.tensorboard] if terminal_state else None)
-
-        # updating to determine if we wanna update target model
-        if terminal_state:
-            self.target_update_counter += 1
-
-        if self.target_update_counter > UPDATE_TARGET_EVERY:
-            self.target_model.set_weights(self.model.get_weights())
-            self.target_update_counter = 0
+    def play_best_move(self):
+        best_mcts_child: MCTS_Node.MCTSNode = MCTS(env.board, self.model_controller.model).find_best_move()
+        return env.step(best_mcts_child.move, self.color), best_mcts_child
 
 
-env = BlobEnv()
 agents = {
-    'True': DQNAgent(chess.WHITE),
-    'False': DQNAgent(chess.BLACK),
+    'True': ChessAgent(chess.WHITE),
+    'False': ChessAgent(chess.BLACK),
 }
 
 # For stats
@@ -167,8 +60,8 @@ if not os.path.isdir('models'):
 
 for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
     # Update tensorboard step every episode
-    agents['True'].tensorboard.step = episode
-    agents['False'].tensorboard.step = episode
+    agents['True'].model_controller.tensorboard.step = episode
+    agents['False'].model_controller.tensorboard.step = episode
 
     # Restarting episode - reset episode reward and step number
     episode_reward = 0
@@ -181,24 +74,15 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
     done = False
     while not done:
 
-        # This part stays mostly the same, the change is to query a model for Q values
-        if np.random.random() > epsilon:
-            # Get action from Q table
-            priors, _ = agents[str(env.board.turn)].get_qs(env.get_board_representation(env.board, env.board.turn))
-            priors = Helper().transform_priors(env.board, priors)
-            action = np.argmax([prior for _, prior in priors])
-        else:
-            # Get random action
-            action = np.random.randint(0, len(list(env.board.legal_moves)))
-
-        new_state, reward, done = env.step(action, agents[str(env.board.turn)].color)
+        (new_state, reward, done), best_child = agents[str(env.board.turn)].play_best_move()
 
         # Transform new continuous state to new discrete state and count reward
         episode_reward += reward
 
         # Every step we update replay memory and train main network
-        agents[str(env.board.turn)].update_replay_memory((env.board, action, reward, new_state, done))
-        agents[str(env.board.turn)].train(done)
+        agents[str(env.board.turn)].model_controller.update_replay_memory(
+            (env.board, best_child.move, best_child.q, reward, new_state, done))
+        agents[str(env.board.turn)].model_controller.train(done)
         step += 1
 
         # Append episode reward to a list and log stats (every given number of episodes)
@@ -207,15 +91,11 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
             average_reward = sum(ep_rewards[-AGGREGATE_STATS_EVERY:]) / len(ep_rewards[-AGGREGATE_STATS_EVERY:])
             min_reward = min(ep_rewards[-AGGREGATE_STATS_EVERY:])
             max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
-            agents[str(env.board.turn)].tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward,
-                                                                 reward_max=max_reward, epsilon=epsilon)
+            # agents[str(env.board.turn)].model_controller.tensorboard.update_stats(
+            #     reward_avg=average_reward, reward_min=min_reward, reward_max=max_reward)
 
             # Save model, but only when min reward is greater or equal a set value
             if average_reward >= MIN_REWARD:
-                agents[str(env.board.turn)].model.save(
-                    f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
-
-        # Decay epsilon
-        if epsilon > MIN_EPSILON:
-            epsilon *= EPSILON_DECAY
-            epsilon = max(MIN_EPSILON, epsilon)
+                agents[str(env.board.turn)].model_controller.model.save(
+                    f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_'
+                    f'{min_reward:_>7.2f}min__'f'{int(time.time())}.model')

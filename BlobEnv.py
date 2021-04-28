@@ -11,9 +11,9 @@ import math
 
 class BlobEnv:
     def __init__(self):
-        self.MOVE_PENALTY = 1
-        self.ENEMY_PENALTY = 200
-        self.WIN_REWARD = 240
+        self.MOVE_PENALTY = 0.1
+        self.ENEMY_PENALTY = 0.8
+        self.WIN_REWARD = 1
         self.board = chess.Board()
         self.action_space_size = self.board.legal_moves.count()
         self.BOARD_REPRESENTATION_SHAPE = (8, 8, 102)  # 8*8 board with 102 planes: see details in function doc
@@ -28,7 +28,7 @@ class BlobEnv:
     def step(self, action, color):
         if color == self.board.turn:
             self.episode_step += 1
-            self.action(action)
+            self.board.push_uci(action)
 
             if self.board.is_checkmate():
                 img = Image.open(os.getcwd() + '\\board.png')
@@ -59,10 +59,10 @@ class BlobEnv:
         img = Image.open(os.getcwd() + '\\board.png')
         return np.array(img)
 
-    def action(self, choice):
-        move = list(self.board.legal_moves)[choice]
-        chess_move = chess.Move.from_uci(str(move))
-        self.board.push(chess_move)
+    # def action(self, choice):
+    #     move = list(self.board.legal_moves)[choice]
+    #     chess_move = chess.Move.from_uci(str(move))
+    #     self.board.push(chess_move)
 
     def update_action_space(self):
         self.action_space_size = self.board.legal_moves.count()

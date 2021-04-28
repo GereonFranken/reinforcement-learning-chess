@@ -5,14 +5,14 @@ from tensorflow.keras import Model
 from MCTS_Node import MCTSNode
 from MCTS_Helper import MCTSHelper
 from copy import deepcopy
-from typing import List
+from typing import List, TypeVar
 
 
 class MCTSController:
 
     def __init__(self, board: chess.Board = None, model: Model = None):
-        self.root = MCTSNode(board, None, None)
-        self.current_node: MCTSNode = self.root # current node that is looked at. Is root node at the beginning
+        self.root = MCTSNode(board, None, None, None)
+        self.current_node: MCTSNode = self.root  # current node that is looked at. Is root node at the beginning
         self.helper = MCTSHelper()
         self.env = BlobEnv()
         self.model = model
@@ -30,13 +30,14 @@ class MCTSController:
         return node_children[np.argmax(move_scores)]
 
     def expand(self, node: MCTSNode):
-        board_representation = self.env.get_board_representation(node.board)
-        priors, value = self.model.predict(board_representation)
+        board_representation = self.env.get_board_representation(node.board, node.board.turn)
+        priors, value = self.model.predict(np.expand_dims(board_representation, axis=0))
         priors: List[(str, float)] = self.helper.transform_priors(node.board, priors)
         for move, prior in priors:
-            new_board = deepcopy(node.board).push(move)
-            node.children.append(MCTSNode(new_board, prior, node))
-        self.backpropagation(node, value, node.board.turn)
+            new_board = deepcopy(node.board)
+            new_board.push_uci(move)
+            node.children.append(MCTSNode(new_board, float(prior), node, move))
+        self.backpropagation(node, value[0], node.board.turn)
 
     def backpropagation(self, node: MCTSNode, value, leaf_turn: chess.WHITE or chess.BLACK):
         if node.parent is not None:
@@ -51,7 +52,7 @@ class MCTSController:
                                              for child in self.root.children])]
 
     def find_best_move(self):
-        for _ in range(100):
+        for _ in range(30):
             self.expand(self.current_node)
             self.current_node = self.root
             while len(self.current_node.children):
