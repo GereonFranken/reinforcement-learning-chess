@@ -14,3 +14,5 @@ board.png
 Pipfile
 Minimax_Tree.py
 Modified_Tensorboard.py
+state*
+chess_engine.zip

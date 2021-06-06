@@ -16,8 +16,8 @@ class MCTSController:
         self.helper = MCTSHelper()
         self.env = BlobEnv()
         self.model = model
-        self.c = 1.5  # exploration param
-        self.t = 0.5  # how greedily should an action be chosen according to the visit count
+        self.c = 1.2  # exploration param
+        self.t = 0.8  # how greedily should an action be chosen according to the visit count
 
     def selection(self, node_children: List[MCTSNode]):
         # add Dirichlet noise to priors
@@ -57,4 +57,8 @@ class MCTSController:
             self.current_node = self.root
             while len(self.current_node.children):
                 self.current_node = self.selection(self.current_node.children)
-        return self.choose_best_action()
+        moves = [child.move for child in self.root.children]
+        move_probabilities = [child.p for child in self.root.children]
+        normalized_probabilities = [np.divide(prob, np.sum(move_probabilities)) for prob in move_probabilities]
+        masked_probabilites = self.helper.mask_probabilites(moves, normalized_probabilities)
+        return self.choose_best_action(), masked_probabilites

@@ -35,7 +35,6 @@ def evaluate_position(position: chess.Board):
 
 def calculate_king_safety_score(piece_player: dict, position: chess.Board):
     if 'K' in piece_player.keys():
-        get_virtual_king_mobility(piece_player['K'], position)
         white_open_file = get_open_file_score(piece_player['K'], position)
         white_pawn_shield = check_pawn_shield(piece_player['K'], position)
         white_virtual_mobility = get_virtual_king_mobility(piece_player['K'], position)

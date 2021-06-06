@@ -4,6 +4,7 @@ from tensorflow.keras.layers import Conv2D, Dense, Flatten, Activation, BatchNor
 from collections import deque
 import random
 import datetime
+import os, re
 
 from BlobEnv import BlobEnv
 from MCTS_Helper import MCTSHelper as Helper
@@ -38,6 +39,8 @@ class ChessModel:
         return cls.instance
 
     def create_model(self):
+        if len(os.listdir("./models")):
+            return tf.keras.models.load_model("models/" + self.get_current_best_model())
         input_layer = tf.keras.layers.Input(shape=env.BOARD_REPRESENTATION_SHAPE)
         # input_layer = tf.keras.layers.InputLayer(input_shape=env.BOARD_REPRESENTATION_SHAPE)
         layers = Conv2D(256, (3, 3), padding="same")(input_layer)
@@ -49,7 +52,7 @@ class ChessModel:
         self.value_head = self._set_value_head(layers)
         model = tf.keras.Model(inputs=input_layer, outputs=[self.policy_head, self.value_head], name="Main_NN")
         model.compile(loss=tf.keras.losses.categorical_crossentropy,
-                      optimizer=tf.keras.optimizers.Adam(lr=0.001),
+                      optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
                       metrics=['accuracy'])
         return model
 
@@ -108,23 +111,25 @@ class ChessModel:
             env.get_board_representation(new_board, new_board.turn), axis=0))
                           for new_board in new_boards]
         X = []
-        y = []
+        y_priors = []
+        y_values = []
 
-        for index, (current_board, move, value, reward, new_board, done) in enumerate(mini_batch):
-            if not done:
-                max_future_q = np.max(future_qs_list[index][0])
-                new_q = reward + DISCOUNT * max_future_q
-            else:
-                new_q = reward
-
-            current_qs = np.array(current_qs_list[index][0]).reshape(1968)
-            current_qs[Helper().find_index_of_move(move)] = new_q
+        for index, (current_board, move, value, reward, new_board, y_moves_priors, done) in enumerate(mini_batch):
+            # if not done:
+            #     max_future_q = np.max(future_qs_list[index][0])
+            #     new_q = reward + DISCOUNT * max_future_q
+            # else:
+            #     new_q = reward
+            #
+            # current_qs = np.array(current_qs_list[index][0]).reshape(1968)
+            # current_qs[Helper().find_index_of_move(move)] = new_q
 
             X.append(env.get_board_representation(current_board, current_board.turn))
-            y.append([current_qs, value])
+            y_priors.append(y_moves_priors)
+            y_values.append(value)
 
-        self.model.fit(np.array(X), np.array(y).reshape((8, 2)), batch_size=MINI_BATCH_SIZE,
-                       verbose=0, shuffle=False, callbacks=[self.tensorboard])
+        self.model.fit(np.array(X), [np.array(y_priors), np.array(y_values)], batch_size=MINI_BATCH_SIZE,
+                       verbose=0, shuffle=False)
 
         # updating to determine if we wanna update target model
         if terminal_state:
@@ -133,3 +138,26 @@ class ChessModel:
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
+
+    @staticmethod
+    def get_current_best_model():
+        """
+        Get best model by average reward, maximum reward and minimum reward in that priority order
+        :return: best model folder name
+        """
+        models = np.array(os.listdir("./models"))
+        best_avg_mask = [
+            f'{np.max(list(map(lambda model: float(re.search(r"max_(.*?)avg", model).group(1)), models))):.2f}avg'
+            in model for model in models]
+        best_model = models[best_avg_mask]
+        if len(best_model) > 1:
+            best_max_mask = [
+                f'{np.max(list(map(lambda model: float(re.search(r"__(.*?)max", model).group(1)), best_model))):.2f}max'
+                in model for model in best_model]
+            best_model = best_model[best_max_mask]
+            if len(best_model) > 1:
+                best_min_mask = [
+                    f'{np.max(list(map(lambda model: float(re.search(r"avg_(.*?)min", model).group(1)), best_model))):.2f}min'
+                    in model for model in best_model]
+                best_model = best_model[best_min_mask]
+        return best_model[0] if len(best_model) else None

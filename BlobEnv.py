@@ -1,18 +1,16 @@
 import os
 import subprocess
 from copy import deepcopy
-
 import chess
 import chess.svg
 import numpy as np
 from PIL import Image
-import math
 
 
 class BlobEnv:
     def __init__(self):
-        self.MOVE_PENALTY = 0.1
-        self.ENEMY_PENALTY = 0.8
+        self.MOVE_PENALTY = 0.05
+        self.ENEMY_PENALTY = 1
         self.WIN_REWARD = 1
         self.board = chess.Board()
         self.action_space_size = self.board.legal_moves.count()
@@ -31,21 +29,19 @@ class BlobEnv:
             self.board.push_uci(action)
 
             if self.board.is_checkmate():
-                img = Image.open(os.getcwd() + '\\board.png')
-                img.save(f"checkmate{self.episode_step}.png", "PNG")
                 if ((self.board.result() == '1-0') and (color == chess.WHITE)) or \
                         ((self.board.result() == '0-1') and (color == chess.BLACK)):
                     reward = self.WIN_REWARD
                 else:
                     reward = -self.ENEMY_PENALTY
             elif self.board.result() == '1/2-1/2':
-                reward = self.WIN_REWARD / 4
+                reward = 0
             else:
                 reward = -self.MOVE_PENALTY
 
             done = False
             if reward == self.WIN_REWARD or reward == -self.ENEMY_PENALTY or \
-                    reward == self.WIN_REWARD / 4 or self.episode_step >= 120:
+                    reward == 0 or self.episode_step >= 120:
                 done = True
 
             return self.board, reward, done
@@ -58,11 +54,6 @@ class BlobEnv:
         subprocess.run(f'{inkscape_path} -w {self.SIZE} -h {self.SIZE} --export-type="png" {svg_name}')
         img = Image.open(os.getcwd() + '\\board.png')
         return np.array(img)
-
-    # def action(self, choice):
-    #     move = list(self.board.legal_moves)[choice]
-    #     chess_move = chess.Move.from_uci(str(move))
-    #     self.board.push(chess_move)
 
     def update_action_space(self):
         self.action_space_size = self.board.legal_moves.count()
@@ -114,3 +105,4 @@ class BlobEnv:
                                                black_queenside_castling_plane), axis=2)
         # possibly concat constant valued plane for "no-progress count"
         return board_representation
+

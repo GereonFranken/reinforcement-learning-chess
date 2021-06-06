@@ -112,8 +112,15 @@ class MCTSHelper:
             i: int = np.where(self.uci_labels == legal_move)[0][0]
             legal_moves.append(legal_move)
             legal_priors.append(np.array(priors).reshape(1968)[i])
-        legal_priors = [prior / np.sum(np.array(legal_priors)) for prior in legal_priors]  # normalize
+        legal_priors = [prior / np.sum(np.array(legal_priors)) for prior in legal_priors]  or 1 # normalize
         return np.array([(legal_moves[j], legal_priors[j]) for j in range(len(legal_priors))])
 
     def find_index_of_move(self, move: str) -> int:
-        return np.argwhere((self.uci_labels == move).all(-1))
+        return np.argwhere(self.uci_labels == move)[0][0]
+
+    def mask_probabilites(self, moves, probabilites):
+        mask = np.zeros((1968))
+        for i, move in enumerate(moves):
+            mask[self.find_index_of_move(move)] = probabilites[i]
+        return mask
+
