@@ -112,7 +112,8 @@ class MCTSHelper:
             i: int = np.where(self.uci_labels == legal_move)[0][0]
             legal_moves.append(legal_move)
             legal_priors.append(np.array(priors).reshape(1968)[i])
-        legal_priors = [prior / np.sum(np.array(legal_priors)) for prior in legal_priors]  or 1 # normalize
+        legal_priors_sum = 1 if np.sum(np.array(legal_priors)) == 0 else np.sum(np.array(legal_priors))
+        legal_priors = [prior / legal_priors_sum for prior in legal_priors] # normalize
         return np.array([(legal_moves[j], legal_priors[j]) for j in range(len(legal_priors))])
 
     def find_index_of_move(self, move: str) -> int:

@@ -60,5 +60,5 @@ class MCTSController:
         moves = [child.move for child in self.root.children]
         move_probabilities = [child.p for child in self.root.children]
         normalized_probabilities = [np.divide(prob, np.sum(move_probabilities)) for prob in move_probabilities]
-        masked_probabilites = self.helper.mask_probabilites(moves, normalized_probabilities)
-        return self.choose_best_action(), masked_probabilites
+        masked_probabilities = self.helper.mask_probabilites(moves, normalized_probabilities)
+        return self.choose_best_action(), masked_probabilities
